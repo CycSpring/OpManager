@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -26,6 +29,7 @@ var (
 	procGetExtendedUDPTable = iphlpapi.NewProc("GetExtendedUdpTable")
 	errUnsupportedPID       = errors.New("系统进程或当前应用进程不允许结束")
 	errTerminatePrivilege   = errors.New("结束进程失败，可能需要管理员权限或该进程不允许结束")
+	errTerminateTimeout     = errors.New("已发送结束进程请求，但进程没有在预期时间内退出")
 )
 
 type PortService struct{}
@@ -121,20 +125,60 @@ func (s *PortService) KillProcess(pid uint32) (KillProcessResult, error) {
 		return KillProcessResult{PID: pid}, err
 	}
 
-	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid)
-	if err != nil {
-		return KillProcessResult{PID: pid}, errTerminatePrivilege
+	if err := taskkillProcessTree(pid); err == nil {
+		return KillProcessResult{
+			PID:     pid,
+			Message: fmt.Sprintf("已强制结束 PID %d 对应的进程树", pid),
+		}, nil
 	}
-	defer windows.CloseHandle(handle)
 
-	if err := windows.TerminateProcess(handle, 1); err != nil {
-		return KillProcessResult{PID: pid}, errTerminatePrivilege
+	if err := terminateProcess(pid); err != nil {
+		return KillProcessResult{PID: pid}, err
 	}
 
 	return KillProcessResult{
 		PID:     pid,
 		Message: fmt.Sprintf("已结束 PID %d 对应的进程", pid),
 	}, nil
+}
+
+func terminateProcess(pid uint32) error {
+	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		return errTerminatePrivilege
+	}
+	defer windows.CloseHandle(handle)
+
+	if err := windows.TerminateProcess(handle, 1); err != nil {
+		return errTerminatePrivilege
+	}
+
+	status, err := windows.WaitForSingleObject(handle, 5000)
+	if err != nil {
+		return errTerminatePrivilege
+	}
+	if status == uint32(windows.WAIT_TIMEOUT) {
+		return errTerminateTimeout
+	}
+	if status != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("结束进程状态异常：%d", status)
+	}
+
+	return nil
+}
+
+func taskkillProcessTree(pid uint32) error {
+	cmd := exec.Command("taskkill", "/PID", strconv.FormatUint(uint64(pid), 10), "/T", "/F")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		message = err.Error()
+	}
+	return fmt.Errorf("结束进程失败，可能需要管理员权限或该进程不允许结束：%s", message)
 }
 
 func validateKillPID(pid uint32) error {

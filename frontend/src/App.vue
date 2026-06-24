@@ -69,12 +69,14 @@ function canKill(item: PortEntry) {
   return item.pid !== 0 && item.pid !== 4
 }
 
-async function refreshPorts() {
+async function refreshPorts(clearNotice = true) {
   if (loading.value) return
 
   loading.value = true
-  error.value = ''
-  message.value = ''
+  if (clearNotice) {
+    error.value = ''
+    message.value = ''
+  }
 
   try {
     const result = await PortService.ListPorts()
@@ -95,12 +97,12 @@ async function killProcess(item: PortEntry) {
     Title: '确认结束进程',
     Message: `端口 ${item.localPort} 当前由 ${item.process || `PID ${item.pid}`} 占用。\n\n结束的是进程，不是单个端口。确认继续吗？`,
     Buttons: [
-      { Label: '取消', IsCancel: true },
-      { Label: '结束进程', IsDefault: true },
+      { Label: 'No', IsCancel: true },
+      { Label: 'Yes', IsDefault: true },
     ],
   })
 
-  if (answer !== '结束进程') return
+  if (answer !== 'Yes') return
 
   killingPid.value = item.pid
   error.value = ''
@@ -109,7 +111,18 @@ async function killProcess(item: PortEntry) {
   try {
     const result = await PortService.KillProcess(item.pid)
     message.value = result.message || `已结束 PID ${item.pid}`
-    await refreshPorts()
+    await refreshPorts(false)
+
+    const remaining = ports.value.find((port) => {
+      return port.protocol === item.protocol && port.localAddr === item.localAddr && port.localPort === item.localPort
+    })
+    if (remaining) {
+      if (remaining.pid === item.pid) {
+        error.value = `PID ${item.pid} 已发送结束请求，但端口 ${item.localPort} 仍然存在，可能需要管理员权限或进程没有退出。`
+      } else {
+        message.value = `已结束 PID ${item.pid}，但端口 ${item.localPort} 又被 ${remaining.process || `PID ${remaining.pid}`} 占用。`
+      }
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -127,7 +140,7 @@ onMounted(refreshPorts)
         <p class="eyebrow">Windows Port Watcher</p>
         <h1>PortLite</h1>
       </div>
-      <button class="refresh-button" type="button" :disabled="loading" @click="refreshPorts">
+      <button class="refresh-button" type="button" :disabled="loading" @click="() => refreshPorts()">
         {{ loading ? '刷新中...' : '刷新' }}
       </button>
     </header>
@@ -203,7 +216,10 @@ onMounted(refreshPorts)
           <tr v-if="!loading && filteredPorts.length === 0">
             <td colspan="8" class="empty">没有匹配的端口</td>
           </tr>
-          <tr v-for="item in filteredPorts" :key="`${item.protocol}-${item.localAddr}-${item.localPort}-${item.pid}-${item.remotePort}`">
+          <tr
+            v-for="(item, index) in filteredPorts"
+            :key="`${item.protocol}-${item.localAddr}-${item.localPort}-${item.remoteAddr}-${item.remotePort}-${item.state}-${item.pid}-${index}`"
+          >
             <td>
               <span class="protocol" :class="item.protocol.toLowerCase()">{{ item.protocol }}</span>
             </td>
