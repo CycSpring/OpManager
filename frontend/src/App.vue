@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Dialogs } from '@wailsio/runtime'
 import { PortService } from '../bindings/github.com/fengfengzhidao/port_lite'
 import type { PortEntry, PortListResult } from '../bindings/github.com/fengfengzhidao/port_lite/models'
@@ -20,38 +20,69 @@ const killingPid = ref<number | null>(null)
 const error = ref('')
 const message = ref('')
 const query = ref('')
+const portFilter = ref('')
+const ipFilter = ref('')
 const protocolFilter = ref<Protocol>('ALL')
 const stateFilter = ref('ALL')
 
+// 状态选项：根据当前协议动态计算，始终排除 "-"
+const stateOptions = computed(() => {
+  const states = new Set<string>()
+  const proto = protocolFilter.value
+  for (const item of ports.value) {
+    if (proto !== 'ALL' && item.protocol !== proto) continue
+    if (item.state && item.state !== '-') states.add(item.state)
+  }
+  return ['ALL', ...Array.from(states).filter(s => s !== '-').sort()]
+})
+
+// 切协议时，自动重置不在新选项中的状态
+watch(protocolFilter, () => {
+  if (!stateOptions.value.includes(stateFilter.value)) {
+    stateFilter.value = 'ALL'
+  }
+})
+
 const filteredPorts = computed(() => {
   const keyword = query.value.trim().toLowerCase()
+  const port = portFilter.value.trim()
+  const ip = ipFilter.value.trim().toLowerCase()
+  const proto = protocolFilter.value
+  const st = stateFilter.value
 
   return ports.value.filter((item) => {
-    if (protocolFilter.value !== 'ALL' && item.protocol !== protocolFilter.value) return false
-    if (stateFilter.value !== 'ALL' && item.state !== stateFilter.value) return false
-    if (!keyword) return true
-
-    return [
-      item.protocol,
-      item.localAddr,
-      String(item.localPort),
-      item.remoteAddr,
-      String(item.remotePort || ''),
-      item.state,
-      String(item.pid),
-      item.process,
-      item.path,
-    ].some((part) => part.toLowerCase().includes(keyword))
+    if (proto !== 'ALL' && item.protocol !== proto) return false
+    if (st !== 'ALL' && (item.state === '-' || item.state !== st)) return false
+    // 端口：精确匹配
+    if (port && String(item.localPort) !== port) return false
+    // IP：模糊匹配
+    if (ip && !item.localAddr.toLowerCase().includes(ip) && !item.remoteAddr.toLowerCase().includes(ip)) return false
+    // 搜索：全字段模糊匹配
+    if (keyword) {
+      return [
+        item.protocol,
+        item.localAddr,
+        String(item.localPort),
+        item.remoteAddr,
+        String(item.remotePort || ''),
+        item.state,
+        String(item.pid),
+        item.process,
+        item.path,
+      ].some((part) => part.toLowerCase().includes(keyword))
+    }
+    return true
   })
 })
 
-const stateOptions = computed(() => {
-  const states = new Set<string>()
-  for (const item of ports.value) {
-    if (item.protocol === 'TCP' && item.state) states.add(item.state)
-  }
-  return ['ALL', ...Array.from(states).sort()]
-})
+// 清空所有筛选
+function clearFilters() {
+  query.value = ''
+  portFilter.value = ''
+  ipFilter.value = ''
+  protocolFilter.value = 'ALL'
+  stateFilter.value = 'ALL'
+}
 
 const lastUpdated = ref('')
 
@@ -165,9 +196,9 @@ onMounted(refreshPorts)
     </section>
 
     <section class="toolbar" aria-label="筛选端口">
-      <label class="search-box">
-        <span>搜索</span>
-        <input v-model="query" type="search" placeholder="端口、进程名、PID、路径" />
+      <label>
+        <span>端口</span>
+        <input v-model="portFilter" type="search" placeholder="精确端口号" />
       </label>
 
       <label>
@@ -188,10 +219,28 @@ onMounted(refreshPorts)
         </select>
       </label>
 
-      <p class="count-text">
-        当前显示 {{ formatNumber(filteredPorts.length) }} 条
-        <span v-if="lastUpdated">，{{ lastUpdated }} 更新</span>
-      </p>
+      <label>
+        <span>IP</span>
+        <input v-model="ipFilter" type="search" placeholder="本地或远程 IP" />
+      </label>
+
+      <label>
+        <span>搜索</span>
+        <input v-model="query" type="search" placeholder="进程名、PID、路径" />
+      </label>
+
+      <div class="toolbar-actions">
+        <p class="count-text">
+          当前显示 {{ formatNumber(filteredPorts.length) }} 条
+          <span v-if="lastUpdated">，{{ lastUpdated }} 更新</span>
+        </p>
+        <button
+          v-if="query || portFilter || ipFilter || protocolFilter !== 'ALL' || stateFilter !== 'ALL'"
+          class="clear-button"
+          type="button"
+          @click="clearFilters"
+        >清空筛选</button>
+      </div>
     </section>
 
     <p v-if="message" class="notice success">{{ message }}</p>
@@ -214,7 +263,7 @@ onMounted(refreshPorts)
         </thead>
         <tbody>
           <tr v-if="!loading && filteredPorts.length === 0">
-            <td colspan="8" class="empty">没有匹配的端口</td>
+            <td colspan="8" class="empty">没有匹配的端口，请尝试调整筛选条件</td>
           </tr>
           <tr
             v-for="(item, index) in filteredPorts"
@@ -227,7 +276,7 @@ onMounted(refreshPorts)
             <td>{{ endpoint(item.localAddr, item.localPort) }}</td>
             <td>{{ item.protocol === 'UDP' ? '-' : endpoint(item.remoteAddr, item.remotePort) }}</td>
             <td>
-              <span class="state" :class="{ listening: item.state === 'LISTENING' }">{{ item.state }}</span>
+              <span class="state" :class="item.state.toLowerCase()">{{ item.state }}</span>
             </td>
             <td>
               <div class="process-cell">
@@ -350,7 +399,7 @@ h1 {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) 150px 180px auto;
+  grid-template-columns: 120px 100px 140px minmax(140px, 1fr) minmax(160px, 1fr) auto;
   align-items: end;
   gap: 12px;
   margin-bottom: 12px;
@@ -379,11 +428,34 @@ select {
   background: #f8fafc;
 }
 
+.toolbar-actions {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
 .count-text {
-  margin: 0 0 9px;
+  margin: 0;
   color: #667085;
   font-size: 13px;
   white-space: nowrap;
+  line-height: 38px;
+}
+
+.clear-button {
+  height: 38px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0 12px;
+  color: #475569;
+  background: #f8fafc;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.clear-button:hover {
+  background: #e2e8f0;
 }
 
 .notice {
@@ -475,6 +547,21 @@ tr:hover td {
 .state.listening {
   color: #047857;
   background: #d1fae5;
+}
+
+.state.established {
+  color: #075985;
+  background: #e0f2fe;
+}
+
+.state.time-wait {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.state.close-wait {
+  color: #9f1239;
+  background: #ffe4e6;
 }
 
 .port {
