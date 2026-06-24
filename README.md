@@ -20,6 +20,9 @@ PortLite 是一个用 Wails v3 写的 Windows 本地端口查看器。
 - 支持手动刷新端口列表。
 - 支持确认后结束占用端口的进程。
 
+截图
+![](ScreenShot_2026-06-24_111028_877.png)
+
 ## 直接使用
 
 从 [Releases](https://github.com/CycSpring/OpManager/releases) 下载 `PortLite.exe`，双击即可运行。
